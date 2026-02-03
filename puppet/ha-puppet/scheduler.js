@@ -102,11 +102,28 @@ export class Scheduler {
     console.log(`Executing schedule: ${schedule.filename} (${id})`);
     
     try {
+      // Parse color strings into arrays (same processing as parseRequestParams)
+      const params = { ...schedule.params };
+      
+      if (typeof params.colors === 'string') {
+        params.colors = params.colors
+          .split(",")
+          .map((color) => color.trim())
+          .map((color) => color.startsWith("#") ? color : `#${color}`)
+          .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
+      }
+      
+      if (typeof params.paletteColors === 'string') {
+        params.paletteColors = params.paletteColors
+          .split(",")
+          .map((color) => color.trim())
+          .map((color) => color.startsWith("#") ? color : `#${color}`)
+          .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
+      }
+      
       // Use the RequestHandler to take the screenshot
       // This ensures we respect the queue and browser state
-      // Note: processScreenshot already handles navigation and page loading,
-      // so we don't need to call warmupBrowser separately
-      const result = await this.requestHandler.processScreenshot(schedule.params);
+      const result = await this.requestHandler.processScreenshot(params);
       
       const extension = schedule.params.format || 'png';
       const filename = `${schedule.filename}.${extension}`;
