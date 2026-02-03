@@ -1553,6 +1553,21 @@
             return;
         }
         
+        // Parse and validate colors the same way parseRequestParams does
+        const colorsString = document.getElementById("colors").value || "";
+        const colors = colorsString
+            .split(",")
+            .map((color) => color.trim())
+            .map((color) => color.startsWith("#") ? color : `#${color}`)
+            .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
+        
+        const paletteColorsString = document.getElementById("palette_colors").value || "";
+        const paletteColors = paletteColorsString
+            .split(",")
+            .map((color) => color.trim())
+            .map((color) => color.startsWith("#") ? color : `#${color}`)
+            .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
+        
         const params = {
             pagePath: document.getElementById("path").value || "/",
             viewport: { 
@@ -1560,8 +1575,8 @@
                 height: parseInt(document.getElementById("height").value)
             },
             extraWait: parseInt(document.getElementById("wait").value) || undefined,
-            colors: document.getElementById("colors").value ? document.getElementById("colors").value.split(',') : [],
-            paletteColors: document.getElementById("palette_colors").value ? document.getElementById("palette_colors").value.split(',') : [],
+            colors: colors,
+            paletteColors: paletteColors,
             dithering: document.getElementById("dithering").value,
             invert: document.getElementById("invert").checked,
             zoom: parseFloat(document.getElementById("zoom").value) || 1,
