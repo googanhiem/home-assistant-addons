@@ -579,16 +579,18 @@ export class Browser {
     try {
       const page = await this.getPage();
 
-      // Do not mutate the passed-in viewport; use a local copy for clip
-      const clipViewport = { ...viewport };
-      const clipHeight = clipViewport.height - headerHeight;
+      // Use the requested viewport height for the captured content area.
+      // The page viewport was set to (requested height + headerHeight)
+      // in `navigatePage`, so capturing at y=headerHeight with height
+      // equal to `viewport.height` yields the requested final image size.
+      const clipHeight = viewport.height;
 
       let image = await page.screenshot({
         type: "png",
         clip: {
           x: 0,
           y: headerHeight,
-          width: clipViewport.width,
+          width: viewport.width,
           height: clipHeight,
         },
       });
