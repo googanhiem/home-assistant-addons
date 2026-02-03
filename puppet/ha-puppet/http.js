@@ -428,6 +428,36 @@ class RequestHandler {
       }
     }
   }
+  async warmupBrowser(params) {
+    // Warm up the browser by navigating to the page without taking a screenshot
+    // This ensures the page is fully loaded before the actual screenshot is taken
+    // Used by the scheduler to follow the same workflow as HTTP requests
+    const requestId = "warmup";
+    
+    if (this.busy) {
+      console.log(requestId, "Busy, waiting in queue");
+      await new Promise((resolve) => this.pending.push(resolve));
+    }
+    this.busy = true;
+
+    try {
+      console.debug(requestId, "Warming up browser for", params.pagePath);
+      await this.browser.navigatePage({
+        ...params,
+        // extraWait is preserved to allow page to fully load
+      });
+      console.debug(requestId, "Browser warmup complete");
+    } catch (err) {
+      console.error(requestId, "Error warming up browser", err);
+    } finally {
+      this.busy = false;
+      const resolve = this.pending.shift();
+      if (resolve) {
+        resolve();
+      }
+      this._markBrowserAccessed();
+    }
+  }
 
   async prepareNextRequest(requestId, requestParams) {
     if (this.busy) {
