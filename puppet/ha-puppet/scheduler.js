@@ -121,6 +121,11 @@ export class Scheduler {
           .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
       }
       
+      // Ensure paletteColors defaults to colors if empty (same logic as parseRequestParams)
+      if (params.paletteColors?.length === 0 && params.colors?.length > 0) {
+        params.paletteColors = params.colors;
+      }
+      
       // Use the RequestHandler to take the screenshot
       // This ensures we respect the queue and browser state
       const result = await this.requestHandler.processScreenshot(params);
