@@ -1553,20 +1553,9 @@
             return;
         }
         
-        // Parse and validate colors the same way parseRequestParams does
-        const colorsString = document.getElementById("colors").value || "";
-        const colors = colorsString
-            .split(",")
-            .map((color) => color.trim())
-            .map((color) => color.startsWith("#") ? color : `#${color}`)
-            .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
-        
-        const paletteColorsString = document.getElementById("palette_colors").value || "";
-        const paletteColors = paletteColorsString
-            .split(",")
-            .map((color) => color.trim())
-            .map((color) => color.startsWith("#") ? color : `#${color}`)
-            .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
+        // Get color values as strings (will be parsed server-side like URL params)
+        const colors = document.getElementById("colors").value || "";
+        const paletteColors = document.getElementById("palette_colors").value || "";
         
         const params = {
             pagePath: document.getElementById("path").value || "/",
