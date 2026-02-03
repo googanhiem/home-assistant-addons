@@ -18,9 +18,13 @@
       .preview-container {
         max-width: 100%;
         overflow: auto;
+        /* Prevent an extremely tall image from expanding the whole page */
+        max-height: calc(100vh - 220px);
       }
       .preview-img {
         max-width: 100%;
+        max-height: calc(100vh - 260px);
+        width: auto;
         height: auto;
         border: 2px solid var(--ha-blue);
         border-radius: 8px;
