@@ -102,12 +102,10 @@ export class Scheduler {
     console.log(`Executing schedule: ${schedule.filename} (${id})`);
     
     try {
-      // Ensure browser is warmed up before taking screenshot
-      // Follow the same workflow as the HTTP preview requests
-      await this.requestHandler.warmupBrowser(schedule.params);
-
       // Use the RequestHandler to take the screenshot
       // This ensures we respect the queue and browser state
+      // Note: processScreenshot already handles navigation and page loading,
+      // so we don't need to call warmupBrowser separately
       const result = await this.requestHandler.processScreenshot(schedule.params);
       
       const extension = schedule.params.format || 'png';
