@@ -1,9 +1,12 @@
 import http from "node:http";
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
 import { Browser } from "./screenshot.js";
-import { isAddOn, hassUrl, hassToken, keepBrowserOpen } from "./const.js";
+import { isAddOn, hassUrl, hassToken, keepBrowserOpen, outputDir } from "./const.js";
 import { CannotOpenPageError } from "./error.js";
 import { handleUIRequest } from "./ui.js";
 import { loadDevicesConfig, getDeviceConfig } from "./devices.js";
+import { Scheduler } from "./scheduler.js";
 
 // Maximum number of next requests to keep in memory
 const MAX_NEXT_REQUESTS = 100;
@@ -62,8 +65,277 @@ class RequestHandler {
     );
   }
 
-  async handleRequest(request, response) {
+  /**
+   * Internal method to process a screenshot request
+   * This is used by both the HTTP handler and the Scheduler
+   */
+  async processScreenshot(params, requestId = "internal") {
+    const start = new Date();
+    
+    // Queue logic
+    if (this.busy) {
+      console.log(requestId, "Busy, waiting in queue");
+      await new Promise((resolve) => this.pending.push(resolve));
+      const end = Date.now();
+      console.log(requestId, `Wait time: ${end - start} ms`);
+    }
+    this.busy = true;
+
+    try {
+      console.debug(requestId, "Processing screenshot", params.pagePath);
+
+      // Extract next param to handle it separately from the main flow
+      // (The scheduler doesn't strictly need 'next' logic in the same way, but good to preserve)
+      const next = params.next; 
+
+      let navigateResult = null;
+      try {
+        navigateResult = await this.browser.navigatePage(params);
+      } catch (err) {
+        if (err instanceof CannotOpenPageError) {
+          throw err;
+        }
+        throw err;
+      }
+      
+      console.debug(requestId, `Navigated in ${navigateResult.time} ms`);
+      this.navigationTime = Math.max(this.navigationTime, navigateResult.time);
+      
+      const screenshotResult = await this.browser.screenshotPage(params);
+      console.debug(requestId, `Screenshot in ${screenshotResult.time} ms`);
+      
+      return {
+        image: screenshotResult.image,
+        timing: {
+            start,
+            navigationTime: this.navigationTime
+        },
+        next
+      };
+
+    } finally {
+      this.busy = false;
+      const resolve = this.pending.shift();
+      if (resolve) {
+        resolve();
+      }
+      this._markBrowserAccessed();
+    }
+  }
+
+  async parseRequestParams(requestUrl) {
+    // Load device configurations
+    const devicesData = loadDevicesConfig();
+
+    // Check for device parameter and apply device configuration
+    const deviceParam = requestUrl.searchParams.get("device");
+    let deviceConfig = null;
+    if (deviceParam) {
+      deviceConfig = getDeviceConfig(deviceParam, devicesData);
+      if (!deviceConfig) {
+        throw new Error(`Unknown device: ${deviceParam}`);
+      }
+    }
+
+    let extraWait = parseInt(requestUrl.searchParams.get("wait"));
+    if (isNaN(extraWait)) {
+      extraWait = undefined;
+    }
+
+    // Get viewport
+    let viewportParams;
+    const viewportQuery = requestUrl.searchParams.get("viewport");
+    if (viewportQuery) {
+      viewportParams = viewportQuery.split("x").map((n) => parseInt(n));
+    } else if (deviceConfig) {
+      viewportParams = [deviceConfig.width, deviceConfig.height];
+    } else {
+      viewportParams = [];
+    }
+
+    if (
+      viewportParams.length != 2 ||
+      !viewportParams.every((x) => !isNaN(x))
+    ) {
+      throw new Error("Invalid viewport");
+    }
+
+    let einkColors = parseInt(requestUrl.searchParams.get("eink"));
+    if (isNaN(einkColors) || einkColors < 2) {
+      einkColors = undefined;
+    }
+
+    const colorsQuery = requestUrl.searchParams.get("colors");
+    const colorsString = colorsQuery !== null ? colorsQuery : (deviceConfig?.colors || "");
+    let colors = colorsString
+      .split(",")
+      .map((color) => color.trim())
+      .map((color) => color.startsWith("#") ? color : `#${color}`)
+      .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
+
+    const paletteColorsQuery = requestUrl.searchParams.get("palette_colors");
+    const paletteColorsString = paletteColorsQuery !== null ? paletteColorsQuery : (deviceConfig?.palette_colors || "");
+    let paletteColors = paletteColorsString
+      .split(",")
+      .map((color) => color.trim())
+      .map((color) => color.startsWith("#") ? color : `#${color}`)
+      .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
+
+    if (colors.length > 0 && paletteColors.length > 0 && colors.length !== paletteColors.length) {
+      paletteColors = [];
+    }
+
+    if (einkColors !== undefined) {
+      if (einkColors === 2 && colors.length === 0) {
+        colors = ["#000000", "#FFFFFF"];
+      } else if (colors.length > 0) {
+        einkColors = undefined;
+      }
+    }
+
+    if (paletteColors.length === 0 && colors.length > 0) {
+      paletteColors = colors;
+    }
+
+    let zoom = parseFloat(requestUrl.searchParams.get("zoom"));
+    if (isNaN(zoom) || zoom <= 0) {
+      zoom = 1;
+    }
+
+    const invert = requestUrl.searchParams.has("invert");
+
+    let format = requestUrl.searchParams.get("format") || "png";
+    if (!["png", "jpeg", "webp", "bmp"].includes(format)) {
+      format = "png";
+    }
+
+    let bmpMode = requestUrl.searchParams.get("bmp_mode") || "color";
+    if (!["color", "grayscale", "binary"].includes(bmpMode)) {
+      bmpMode = "color";
+    }
+
+    let rotate = parseInt(requestUrl.searchParams.get("rotate"));
+    if (isNaN(rotate) || ![90, 180, 270].includes(rotate)) {
+      rotate = undefined;
+    }
+
+    const lang = requestUrl.searchParams.get("lang") || undefined;
+    const theme = requestUrl.searchParams.get("theme") || undefined;
+    const dark = requestUrl.searchParams.has("dark");
+    
+    const ditheringQuery = requestUrl.searchParams.get("dithering");
+    let dithering = ditheringQuery !== null ? ditheringQuery : (deviceConfig?.dithering || "none");
+    
+    // next param
+    const nextParam = requestUrl.searchParams.get("next");
+    let next = parseInt(nextParam);
+    if (isNaN(next) || next < 0) {
+      next = undefined;
+    }
+
+    return {
+      pagePath: requestUrl.pathname,
+      viewport: { width: viewportParams[0], height: viewportParams[1] },
+      extraWait,
+      colors,
+      paletteColors,
+      dithering,
+      invert,
+      zoom,
+      format,
+      bmpMode,
+      rotate,
+      lang,
+      theme,
+      dark,
+      next
+    };
+  }
+
+  async handleRequest(request, response, scheduler) {
     const requestUrl = new URL(request.url, "http://localhost");
+
+    // Serve static files from output directory
+    if (requestUrl.pathname.startsWith("/output/")) {
+        const filename = requestUrl.pathname.replace("/output/", "");
+        // Basic path traversal protection
+        if (filename.includes("..") || filename.includes("/")) {
+            response.statusCode = 403;
+            response.end("Forbidden");
+            return;
+        }
+        
+        const filePath = join(outputDir, filename);
+        if (existsSync(filePath)) {
+            const content = readFileSync(filePath);
+            const ext = filename.split('.').pop();
+            const mimeTypes = {
+                png: 'image/png',
+                jpg: 'image/jpeg',
+                jpeg: 'image/jpeg',
+                webp: 'image/webp',
+                bmp: 'image/bmp'
+            };
+            response.writeHead(200, { 
+                "Content-Type": mimeTypes[ext] || "application/octet-stream",
+                "Content-Length": content.length
+            });
+            response.write(content);
+            response.end();
+            return;
+        } else {
+            response.statusCode = 404;
+            response.end("File not found");
+            return;
+        }
+    }
+
+    // API: List Schedules
+    if (requestUrl.pathname === "/api/schedules" && request.method === "GET") {
+        const schedules = scheduler.list();
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify(schedules));
+        return;
+    }
+
+    // API: Create Schedule
+    if (requestUrl.pathname === "/api/schedules" && request.method === "POST") {
+        let body = "";
+        request.on("data", chunk => body += chunk.toString());
+        request.on("end", () => {
+            try {
+                const data = JSON.parse(body);
+                // Validate required fields
+                if (!data.filename || !data.interval || !data.params) {
+                    response.statusCode = 400;
+                    response.end("Missing required fields");
+                    return;
+                }
+                const schedule = scheduler.add(data);
+                response.writeHead(200, { "Content-Type": "application/json" });
+                response.end(JSON.stringify(schedule));
+            } catch (e) {
+                console.error("Error creating schedule:", e);
+                response.statusCode = 500;
+                response.end("Internal Server Error");
+            }
+        });
+        return;
+    }
+
+    // API: Delete Schedule
+    if (requestUrl.pathname.startsWith("/api/schedules/") && request.method === "DELETE") {
+        const id = requestUrl.pathname.split("/").pop();
+        const success = scheduler.delete(id);
+        if (success) {
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({ success: true }));
+        } else {
+            response.statusCode = 404;
+            response.end("Schedule not found");
+        }
+        return;
+    }
 
     if (requestUrl.pathname === "/favicon.ico") {
       response.statusCode = 404;
@@ -77,186 +349,21 @@ class RequestHandler {
     }
 
     const requestId = ++this.requestCount;
-    console.debug(requestId, "Request", request.url);
-
-    const start = new Date();
-    if (this.busy) {
-      console.log(requestId, "Busy, waiting in queue");
-      await new Promise((resolve) => this.pending.push(resolve));
-      const end = Date.now();
-      console.log(requestId, `Wait time: ${end - start} ms`);
-    }
-    this.busy = true;
-
+    
     try {
-      console.debug(requestId, "Handling", request.url);
-
-      // Load device configurations
-      const devicesData = loadDevicesConfig();
-
-      // Check for device parameter and apply device configuration
-      const deviceParam = requestUrl.searchParams.get("device");
-      let deviceConfig = null;
-      if (deviceParam) {
-        deviceConfig = getDeviceConfig(deviceParam, devicesData);
-        if (!deviceConfig) {
-          response.statusCode = 400;
-          response.end(`Unknown device: ${deviceParam}`);
-          return;
-        }
-      }
-
-      let extraWait = parseInt(requestUrl.searchParams.get("wait"));
-      if (isNaN(extraWait)) {
-        extraWait = undefined;
-      }
-
-      // Get viewport - use device config as default if device is specified
-      let viewportParams;
-      const viewportQuery = requestUrl.searchParams.get("viewport");
-      if (viewportQuery) {
-        viewportParams = viewportQuery.split("x").map((n) => parseInt(n));
-      } else if (deviceConfig) {
-        viewportParams = [deviceConfig.width, deviceConfig.height];
-      } else {
-        viewportParams = [];
-      }
-
-      if (
-        viewportParams.length != 2 ||
-        !viewportParams.every((x) => !isNaN(x))
-      ) {
+      let requestParams;
+      try {
+        requestParams = await this.parseRequestParams(requestUrl);
+      } catch (e) {
         response.statusCode = 400;
-        response.end();
+        response.end(e.message);
         return;
       }
 
-      let einkColors = parseInt(requestUrl.searchParams.get("eink"));
-      if (isNaN(einkColors) || einkColors < 2) {
-        einkColors = undefined;
-      }
-
-      // Supported colours as hex: colors=FF0000,00FF00,0000FF,... or colors=#FF0000,#00FF00,#0000FF,...
-      // Use device config as default if available
-      const colorsQuery = requestUrl.searchParams.get("colors");
-      const colorsString = colorsQuery !== null ? colorsQuery : (deviceConfig?.colors || "");
-      let colors = colorsString
-        .split(",")
-        .map((color) => color.trim())
-        .map((color) => color.startsWith("#") ? color : `#${color}`)
-        .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
-
-      // Palette colours for quantization (pixels matched to these, then mapped to colors)
-      // Use device config as default if available
-      const paletteColorsQuery = requestUrl.searchParams.get("palette_colors");
-      const paletteColorsString = paletteColorsQuery !== null ? paletteColorsQuery : (deviceConfig?.palette_colors || "");
-      let paletteColors = paletteColorsString
-        .split(",")
-        .map((color) => color.trim())
-        .map((color) => color.startsWith("#") ? color : `#${color}`)
-        .filter((color) => /^#[0-9A-F]{6}$/i.test(color));
-
-      // Validate that colors and paletteColors have the same length if both are provided
-      if (colors.length > 0 && paletteColors.length > 0 && colors.length !== paletteColors.length) {
-        // Mismatch - clear paletteColors to ignore it
-        paletteColors = [];
-      }
-
-      // Handle eink parameter deprecation and mutual exclusivity with colors
-      if (einkColors !== undefined) {
-        console.warn('[DEPRECATED] The "eink" query parameter is deprecated. Please use "colors" instead. Example: colors=000000,FFFFFF for black and white.');
-
-        // Convert eink=2 to black and white colors for backward compatibility
-        if (einkColors === 2 && colors.length === 0) {
-          colors = ["#000000", "#FFFFFF"];
-          console.log('[eink migration] Converted eink=2 to colors=000000,FFFFFF');
-          einkColors = undefined;
-        } else if (colors.length > 0) {
-          // colors parameter takes precedence - ignore eink
-          console.warn('[eink ignored] Both "eink" and "colors" parameters provided. Using "colors" and ignoring "eink".');
-          einkColors = undefined;
-        }
-      }
-
-      // If palette_colors is empty, use colors as the palette
-      if (paletteColors.length === 0 && colors.length > 0) {
-        paletteColors = colors;
-      }
-
-      let zoom = parseFloat(requestUrl.searchParams.get("zoom"));
-      if (isNaN(zoom) || zoom <= 0) {
-        zoom = 1;
-      }
-
-      const invert = requestUrl.searchParams.has("invert");
-
-      let format = requestUrl.searchParams.get("format") || "png";
-      if (!["png", "jpeg", "webp", "bmp"].includes(format)) {
-        format = "png";
-      }
-
-      // BMP mode: 'color' (24-bit), 'grayscale' (8-bit), 'binary' (1-bit)
-      let bmpMode = requestUrl.searchParams.get("bmp_mode") || "color";
-      if (!["color", "grayscale", "binary"].includes(bmpMode)) {
-        bmpMode = "color";
-      }
-
-      let rotate = parseInt(requestUrl.searchParams.get("rotate"));
-      if (isNaN(rotate) || ![90, 180, 270].includes(rotate)) {
-        rotate = undefined;
-      }
-
-      const lang = requestUrl.searchParams.get("lang") || undefined;
-      const theme = requestUrl.searchParams.get("theme") || undefined;
-      const dark = requestUrl.searchParams.has("dark");
-
-      // Dithering algorithm
-      // Use device config as default if available
-      const ditheringQuery = requestUrl.searchParams.get("dithering");
-      let dithering = ditheringQuery !== null ? ditheringQuery : (deviceConfig?.dithering || "none");
-      const validDitheringAlgorithms = [
-        "none",
-        "floyd-steinberg",
-        "atkinson",
-        "jarvis-judice-ninke",
-        "stucki",
-        "burkes",
-        "sierra",
-        "sierra-lite"
-      ];
-      if (!validDitheringAlgorithms.includes(dithering)) {
-        dithering = "none";
-      }
-
-      const requestParams = {
-        pagePath: requestUrl.pathname,
-        viewport: { width: viewportParams[0], height: viewportParams[1] },
-        extraWait,
-        colors,
-        paletteColors,
-        dithering,
-        invert,
-        zoom,
-        format,
-        bmpMode,
-        rotate,
-        lang,
-        theme,
-        dark,
-      };
-
-      // Extract next param and schedule if necessary
-      const nextParam = requestUrl.searchParams.get("next");
-      let next = parseInt(nextParam);
-      if (isNaN(next) || next < 0) {
-        next = undefined;
-      }
-
-      // We removed error handling on this block so the add-on crashes and watchdog recovers
-      let image;
-      let navigateResult = null;
+      // Use the internal process method
+      let result;
       try {
-        navigateResult = await this.browser.navigatePage(requestParams);
+        result = await this.processScreenshot(requestParams, requestId);
       } catch (err) {
         if (err instanceof CannotOpenPageError) {
           console.error(requestId, `Cannot open page: ${err.message}`);
@@ -266,20 +373,15 @@ class RequestHandler {
         }
         throw err;
       }
-      console.debug(requestId, `Navigated in ${navigateResult.time} ms`);
-      this.navigationTime = Math.max(this.navigationTime, navigateResult.time);
-      const screenshotResult = await this.browser.screenshotPage(requestParams);
-      console.debug(requestId, `Screenshot in ${screenshotResult.time} ms`);
-      image = screenshotResult.image;
 
-      // If eink processing happened, the format could be png or bmp
-      const responseFormat = format;
+      const { image, timing, next } = result;
+
       let contentType;
-      if (responseFormat === "jpeg") {
+      if (requestParams.format === "jpeg") {
         contentType = "image/jpeg";
-      } else if (responseFormat === "webp") {
+      } else if (requestParams.format === "webp") {
         contentType = "image/webp";
-      } else if (responseFormat === "bmp") {
+      } else if (requestParams.format === "bmp") {
         contentType = "image/bmp";
       } else {
         contentType = "image/png";
@@ -296,16 +398,13 @@ class RequestHandler {
         return;
       }
 
-      // Adjust next based on time it took to process the request
+      // Schedule next request (warmup)
       const end = new Date();
-      const requestTime = end.getTime() - start.getTime();
+      const requestTime = end.getTime() - timing.start.getTime();
       const nextWaitTime =
-        // Convert to milliseconds
         next * 1000 -
-        // We calculate next from the start of the request
         requestTime -
-        // Start a bit earlier to account for the time browser warms up
-        this.navigationTime -
+        timing.navigationTime -
         1000;
 
       if (nextWaitTime < 0) {
@@ -321,13 +420,12 @@ class RequestHandler {
       if (this.nextRequests.length > MAX_NEXT_REQUESTS) {
         clearTimeout(this.nextRequests.shift());
       }
-    } finally {
-      this.busy = false;
-      const resolve = this.pending.shift();
-      if (resolve) {
-        resolve();
+    } catch (err) {
+      console.error(requestId, "Unhandled error", err);
+      if (!response.writableEnded) {
+        response.statusCode = 500;
+        response.end("Internal Server Error");
       }
-      this._markBrowserAccessed();
     }
   }
 
@@ -361,9 +459,11 @@ class RequestHandler {
 
 const browser = new Browser(hassUrl, hassToken);
 const requestHandler = new RequestHandler(browser);
+const scheduler = new Scheduler(requestHandler); // Init scheduler
 const port = 10000;
+
 const server = http.createServer((request, response) =>
-  requestHandler.handleRequest(request, response),
+  requestHandler.handleRequest(request, response, scheduler),
 );
 server.listen(port);
 const now = new Date();

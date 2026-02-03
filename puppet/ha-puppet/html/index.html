@@ -500,7 +500,45 @@
               URL copied to clipboard!
             </p>
           </div>
+          <div class="mb-6 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+            <h3 class="text-sm font-semibold text-gray-700 mb-2">Schedule Screenshot</h3>
+            <div class="flex gap-2 items-end">
+              <div class="flex-1">
+                <label class="block text-xs font-medium text-gray-600 mb-1">File Name (without extension)</label>
+                <input
+                  type="text"
+                  id="scheduleName"
+                  class="w-full px-3 py-2 border rounded-md text-sm"
+                  placeholder="e.g., living-room-display"
+                />
+              </div>
+              <div class="w-32">
+                <label class="block text-xs font-medium text-gray-600 mb-1">Interval</label>
+                <select id="scheduleInterval" class="w-full px-3 py-2 border rounded-md text-sm">
+                  <option value="1">1 min</option>
+                  <option value="5">5 mins</option>
+                  <option value="15">15 mins</option>
+                  <option value="30">30 mins</option>
+                  <option value="60">1 hour</option>
+                </select>
+              </div>
+              <button
+                onclick="createSchedule()"
+                class="px-4 py-2 text-white rounded-md transition duration-200 shadow-sm text-sm"
+                style="background-color: var(--ha-blue)"
+              >
+                Create Schedule
+              </button>
+            </div>
+            <p id="scheduleFeedback" class="text-xs mt-2 hidden" style="color: #10b981"></p>
+          </div>
 
+          <div class="mb-4">
+             <h3 class="text-lg font-semibold mb-2" style="color: var(--ha-blue-dark)">Active Schedules</h3>
+             <div id="schedulesList" class="space-y-2">
+                <p class="text-gray-500 italic text-sm">No active schedules.</p>
+             </div>
+          </div>
           <div id="loadingIndicator" class="hidden text-center py-12">
             <div
               class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-t-transparent"
@@ -1456,7 +1494,123 @@
         updateUrl();
         updateBrowserUrl();
         loadPreview();
+        loadSchedules(); 
       });
+    // --- Scheduler Functions ---
+
+    async function loadSchedules() {
+        try {
+            const res = await fetch('/api/schedules');
+            if (res.ok) {
+                const schedules = await res.json();
+                renderSchedules(schedules);
+            }
+        } catch (e) {
+            console.error("Failed to load schedules", e);
+        }
+    }
+
+    function renderSchedules(schedules) {
+        const container = document.getElementById('schedulesList');
+        if (schedules.length === 0) {
+            container.innerHTML = '<p class="text-gray-500 italic text-sm">No active schedules.</p>';
+            return;
+        }
+
+        container.innerHTML = schedules.map(s => {
+            const ext = s.params.format || 'png';
+            const url = `/output/${s.filename}.${ext}`;
+            const fullUrl = window.location.origin + url;
+            
+            return `
+            <div class="flex items-center justify-between bg-white border border-gray-200 p-3 rounded-md shadow-sm">
+                <div>
+                    <div class="font-medium text-gray-800">${s.filename}</div>
+                    <div class="text-xs text-gray-500">
+                        Every ${s.interval} mins • 
+                        <a href="${url}" target="_blank" class="text-blue-600 hover:underline">View Image</a>
+                    </div>
+                    <div class="text-xs text-gray-400 font-mono mt-1 select-all">${fullUrl}</div>
+                </div>
+                <button onclick="deleteSchedule('${s.id}')" class="text-red-500 hover:text-red-700 p-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                </button>
+            </div>
+            `;
+        }).join('');
+    }
+
+    async function createSchedule() {
+        const nameInput = document.getElementById('scheduleName');
+        const intervalInput = document.getElementById('scheduleInterval');
+        const feedback = document.getElementById('scheduleFeedback');
+        
+        const filename = nameInput.value.trim();
+        const interval = parseInt(intervalInput.value);
+        
+        if (!filename) {
+            alert("Please enter a file name.");
+            return;
+        }
+        
+        const params = {
+            pagePath: document.getElementById("path").value || "/",
+            viewport: { 
+                width: parseInt(document.getElementById("width").value), 
+                height: parseInt(document.getElementById("height").value)
+            },
+            extraWait: parseInt(document.getElementById("wait").value) || undefined,
+            colors: document.getElementById("colors").value ? document.getElementById("colors").value.split(',') : [],
+            paletteColors: document.getElementById("palette_colors").value ? document.getElementById("palette_colors").value.split(',') : [],
+            dithering: document.getElementById("dithering").value,
+            invert: document.getElementById("invert").checked,
+            zoom: parseFloat(document.getElementById("zoom").value) || 1,
+            format: document.getElementById("format").value,
+            bmpMode: document.getElementById("bmp_mode")?.value || 'color',
+            rotate: parseInt(document.getElementById("rotate").value) || undefined,
+            lang: document.getElementById("lang").value || undefined,
+            theme: document.getElementById("theme").value || undefined,
+            dark: document.getElementById("dark").checked
+        };
+        
+        try {
+            const res = await fetch('/api/schedules', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filename,
+                    interval,
+                    params
+                })
+            });
+
+            if (res.ok) {
+                feedback.textContent = "Schedule created successfully!";
+                feedback.classList.remove("hidden");
+                nameInput.value = "";
+                setTimeout(() => feedback.classList.add("hidden"), 3000);
+                loadSchedules();
+            } else {
+                alert("Failed to create schedule");
+            }
+        } catch (e) {
+            console.error(e);
+            alert("Error creating schedule");
+        }
+    }
+
+    async function deleteSchedule(id) {
+        if(!confirm("Are you sure you want to delete this schedule?")) return;
+        
+        try {
+            const res = await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                loadSchedules();
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
     </script>
   </body>
 </html>

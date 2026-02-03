@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from "fs";
+import { join } from "path";
 
 // load first file that exists
 const optionsFile = ["./options-dev.json", "/data/options.json"].find(
@@ -26,3 +27,8 @@ export const keepBrowserOpen = options.keep_browser_open || false;
 if (!hassToken) {
   console.warn("No access token configured. UI will show configuration instructions.");
 }
+
+// Data directory configuration
+export const dataDir = isAddOn ? "/data" : "./data";
+export const schedulesFile = join(dataDir, "schedules.json");
+export const outputDir = join(dataDir, "output");
