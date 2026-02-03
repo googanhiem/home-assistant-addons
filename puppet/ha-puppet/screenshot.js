@@ -379,18 +379,20 @@ export class Browser {
     try {
       const page = await this.getPage();
 
-      // We add 56px to the height to account for the header
-      // We'll cut that off from the screenshot
-      viewport.height += headerHeight;
+      // We add 56px to the height to account for the header.
+      // Use a copy so we don't mutate the caller's `viewport` object
+      // (mutating it caused cumulative height growth on repeated screenshots).
+      const targetViewport = { ...viewport };
+      targetViewport.height = targetViewport.height + headerHeight;
 
       const curViewport = page.viewport();
 
       if (
         !curViewport ||
-        curViewport.width !== viewport.width ||
-        curViewport.height !== viewport.height
+        curViewport.width !== targetViewport.width ||
+        curViewport.height !== targetViewport.height
       ) {
-        await page.setViewport(viewport);
+        await page.setViewport(targetViewport);
       }
 
       let defaultWait = isAddOn ? 750 : 500;
@@ -577,13 +579,17 @@ export class Browser {
     try {
       const page = await this.getPage();
 
+      // Do not mutate the passed-in viewport; use a local copy for clip
+      const clipViewport = { ...viewport };
+      const clipHeight = clipViewport.height - headerHeight;
+
       let image = await page.screenshot({
         type: "png",
         clip: {
           x: 0,
           y: headerHeight,
-          width: viewport.width,
-          height: viewport.height - headerHeight,
+          width: clipViewport.width,
+          height: clipHeight,
         },
       });
 
